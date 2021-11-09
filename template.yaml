@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  serverless-text-translation
+  Sample SAM Template for serverless-text-translation
+
+Globals:
+  Function:
+    Timeout: 120
+
+Parameters:
+  InputBucketName:
+    Type: String
+    Description: "REQUIRED: Input bucket to place files to translate."
+  OutputBucketName:
+    Type: String
+    Description: "REQUIRED: Bucket to place translated files."
+  SourceLanguageCode:
+    Type: String
+    Default: en
+  TargetLanguageCode:
+    Type: String
+    Default: es
+  SNSTopicName:
+    Type: String
+    Description: "REQUIRED: topic to send notification when job is finished."
+
+Resources:
+  TextTranslateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: TextTranslateFunction
+      Handler: translate.function.TextTranslationProcessor::handleRequest
+      Runtime: java11
+      MemorySize: 512
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref InputBucketName
+        - S3CrudPolicy:
+            BucketName: !Ref OutputBucketName
+        - DynamoDBReadPolicy:
+            TableName: !Ref TranslateUserTable
+        - !Ref S3FileTriggerEventProcessorPolicy
+        - Statement:
+          - Sid: TranslationStateMachinePolicy
+            Effect: Allow
+            Action:
+               - 'states:StartExecution'
+            Resource: ['*']
+
+      Environment:
+        Variables:
+          SOURCE_LANG_CODE: !Ref SourceLanguageCode
+          TARGET_LANG_CODE: !Ref TargetLanguageCode
+          INPUT_BUCKET_NAME: !Ref InputBucketName
+          OUTPUT_BUCKET_NAME: !Ref OutputBucketName
+          S3_ROLE_ARN: !GetAtt TranslateTextServiceRole1.Arn
+          STATE_MACHINE_ARN: !GetAtt JobPollerStateMachine.Arn
+          TRANSLATE_USER_TABLE: !Ref TranslateUserTable
+      Events:
+        TextTranslateApi1:
+          Type: Api
+          Properties:
+            Path: /Job
+            Method: post
+
+  TextTranslateSNSEventProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: TextTranslateFunction
+      Handler: translate.function.PostTranslateEventProcessor::handleRequest
+      Runtime: java11
+      MemorySize: 512
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref InputBucketName
+        - S3CrudPolicy:
+            BucketName: !Ref OutputBucketName
+        - !Ref TranslateTextJobPollerPolicy1
+      Environment:
+        Variables:
+          INPUT_BUCKET_NAME: !Ref InputBucketName
+          OUTPUT_BUCKET_NAME: !Ref OutputBucketName
+      Events:
+        TextTranslateSNS:
+          Type: SNS
+          Properties:
+            Topic:
+              Ref: AmazonTranslateSnsTopic
+
+  RegisterTranslateUserHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: TextTranslateFunction
+      Handler: translate.function.RegisterUserHandler::handleRequest
+      Runtime: java11
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TranslateUserTable
+      Environment:
+        Variables:
+          TRANSLATE_USER_TABLE: !Ref TranslateUserTable
+      Events:
+        UserRegistryApi1:
+          Type: Api
+          Properties:
+            Path: /user/{userName}
+            Method: post
+        UserRegistryApi2:
+          Type: Api
+          Properties:
+            Path: /user/{userName}
+            Method: get
+
+
+  TranslateAPIGatewayHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: TextTranslateFunction
+      Handler: translate.function.TranslateGatewayHandler::handleRequest
+      Runtime: java11
+      MemorySize: 512
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref OutputBucketName
+        - !Ref TranslateTextJobPollerPolicy1
+      Environment:
+        Variables:
+          OUTPUT_BUCKET_NAME: !Ref OutputBucketName
+      Events:
+        Api1:
+          Type: Api
+          Properties:
+            Path: /job/{jobId}
+            Method: get
+        Api2:
+          Type: Api
+          Properties:
+            Path: /job/{jobId}/file/{fileId}
+            Method: get
+
+  InputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref InputBucketName
+  OutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref OutputBucketName
+
+  AmazonTranslateSnsTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Ref SNSTopicName
+
+  TranslateTextJobPollerPolicy1:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - translate:DescribeTextTranslationJob
+            Resource: ['*']
+      ManagedPolicyName: TranslateTextJobPollerPolicy1
+
+  TranslateTextJobPoller:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: TextTranslateFunction
+      Handler: translate.function.TranslateJobPoller::handleRequest
+      Runtime: java11
+      MemorySize: 512
+      Policies:
+        - !Ref TranslateTextJobPollerPolicy1
+
+  JobPollerStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: job-poller-asl.json
+      DefinitionSubstitutions:
+        JobStatusCheckerArn: !GetAtt TranslateTextJobPoller.Arn
+        JobStatusUpdateTopicArn: !Ref AmazonTranslateSnsTopic
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref TranslateTextJobPoller
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref SNSTopicName
+
+  TranslateTextServiceRole1:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: translate.amazonaws.com
+        Version: "2012-10-17"
+
+  S3FileTriggerEventProcessorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'iam:PassRole'
+            Resource: !GetAtt TranslateTextServiceRole1.Arn
+          - Effect: Allow
+            Action:
+              - 'translate:StartTextTranslationJob'
+            Resource: ['*']
+      ManagedPolicyName: S3FileTriggerEventProcessorPolicy
+
+  TranslateTextServiceRoleDefaultPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: ['s3:*']
+            Effect: Allow
+            Resource: [!Join ['', [ !GetAtt InputBucket.Arn , /*]] , !GetAtt InputBucket.Arn]
+          - Action: ['s3:*']
+            Effect: Allow
+            Resource:  [!Join ['', [ !GetAtt OutputBucket.Arn , /*]] , !GetAtt OutputBucket.Arn]
+        Version: "2012-10-17"
+      ManagedPolicyName: TranslateTextServiceRoleDefaultPolicy
+      Roles:
+        - Ref:   TranslateTextServiceRole1
+
+  TranslateUserTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: TranslateUserTable2
+      AttributeDefinitions:
+        - AttributeName: userName
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userName
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 4
+        WriteCapacityUnits: 4
+
+Outputs:
+  TextTranslateApi:
+    Description: "API Gateway endpoint URL for Prod stage for AWS translate function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/Job/"
+  TextTranslateFunction:
+    Description: "Text Translate Lambda Function ARN"
+    Value: !GetAtt TextTranslateFunction.Arn
+  TextTranslateFunctionIamRole:
+    Description: "Implicit IAM Role created for Text Translate function"
+    Value: !GetAtt TextTranslateFunctionRole.Arn
+  InputBucket:
+    Description: "InputBucket ARN"
+    Value: !GetAtt InputBucket.Arn
+  OutputBucket:
+    Description: "OutputBucket ARN"
+    Value: !GetAtt OutputBucket.Arn
+  JobPollerStateMachine:
+    Description: "Job Poller state machine"
+    Value: !GetAtt JobPollerStateMachine.Arn
+  TranslateAPIGatewayHandlerApi:
+    Description: "API Gateway endpoint URL for Prod stage for AWS TranslateAPIGatewayHandler function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/job/"

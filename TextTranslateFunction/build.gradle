@@ -1,0 +1,23 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.amazonaws:aws-lambda-java-core:1.2.1'
+    implementation 'com.amazonaws:aws-lambda-java-events:3.6.0'
+
+    implementation group: 'com.amazonaws', name: 'aws-java-sdk-translate', version: '1.11.1005'
+    implementation group: 'com.amazonaws', name: 'aws-java-sdk-s3', version: '1.11.1005'
+    implementation group: 'com.amazonaws', name: 'aws-java-sdk-stepfunctions', version: '1.11.81'
+    implementation group: 'com.amazonaws', name: 'aws-java-sdk-dynamodb', version: '1.11.1010'
+
+    implementation 'org.apache.logging.log4j:log4j-api:2.13.0'
+    implementation 'org.apache.logging.log4j:log4j-core:2.13.0'
+    implementation 'org.apache.logging.log4j:log4j-slf4j18-impl:2.13.0'
+
+    testImplementation 'junit:junit:4.13.1'
+}

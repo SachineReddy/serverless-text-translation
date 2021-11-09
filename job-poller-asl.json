@@ -1,0 +1,82 @@
+{
+  "Comment": "Polling step function for translate job complete",
+  "StartAt": "LambdaPoll",
+  "States": {
+    "LambdaPoll": {
+      "Type": "Task",
+      "Resource": "${JobStatusCheckerArn}",
+      "InputPath": "$.jobId",
+      "ResultPath": "$.jobStatus",
+      "Next": "Job Complete?",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 5
+        }
+      ]
+    },
+    "Job Complete?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.jobStatus",
+          "StringEquals": "IN_PROGRESS",
+          "Next": "Wait X Seconds"
+        },
+        {
+          "Variable": "$.jobStatus",
+          "StringEquals": "SUBMITTED",
+          "Next": "Wait X Seconds"
+        },
+        {
+          "Variable": "$.jobStatus",
+          "StringEquals": "COMPLETED",
+          "Next": "Notify"
+        },
+        {
+          "Variable": "$.jobStatus",
+          "StringEquals": "FAILED",
+          "Next": "Notify"
+        },
+        {
+          "Variable": "$.jobStatus",
+          "StringEquals": "STOPPED",
+          "Next": "Notify"
+        }
+      ],
+      "Default": "Wait X Seconds"
+    },
+    "Wait X Seconds": {
+      "Type": "Wait",
+      "Seconds": 300,
+      "Next": "LambdaPoll"
+    },
+    "Notify": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "Subject": "Translate Batch Job Notification",
+        "Message": {
+          "JobId.$": "$.jobId",
+          "JobStatus.$": "$.jobStatus"
+        },
+        "MessageAttributes": {
+          "JobId": {
+            "DataType": "String",
+            "StringValue.$": "$.jobId"
+          },
+          "JobStatus": {
+            "DataType": "String",
+            "StringValue.$": "$.jobStatus"
+          }
+        },
+        "TopicArn": "${JobStatusUpdateTopicArn}"
+      },
+      "End": true
+    }
+  }
+}
